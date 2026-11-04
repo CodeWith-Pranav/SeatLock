@@ -1,37 +1,73 @@
 # SeatLock
 
-Campus event reservations with timed holds, fair waitlists, organizer tools and a concurrency demonstration.
+Campus event reservations with timed seat holds and a fair waitlist.
 
-Live: https://seatlock-roan.vercel.app
+[Live demo](https://seatlock-roan.vercel.app) · [Verification](VERIFICATION.md)
 
-## Stack
-Next.js App Router, React, TypeScript, Supabase Auth and PostgreSQL, Vercel Hobby.
+## The problem
+
+When several people reserve the last seat at once, a booking system must prevent overselling without leaving abandoned reservations locked forever. SeatLock uses transactional reservations, five-minute holds and FIFO waitlist promotion to handle that lifecycle.
 
 ## Features
-Discover/search/filter/sort events; create/edit/cancel events; five-minute seat holds; confirmation and cancellation; FIFO waitlist promotion; expiry handling; personal tickets; calendar exports; organizer attendee lists; CSV exports; check-in; an isolated 80-request reliability lab.
 
-## Development
-Node.js 22 or newer. Run `npm ci`, then `npm run dev`. Production verification: `npm run build` and `npm run typecheck`.
+- Search, filter and sort campus events.
+- Hold one seat per account, confirm a reservation or release it.
+- Join a waitlist and receive a timed hold when capacity becomes available.
+- Create, edit and cancel events as an organizer.
+- View attendee lists, export CSV files and check in confirmed tickets.
+- Export events to a calendar and manage active and past tickets.
+- Run an isolated 80-request reliability demonstration against a capacity of 10.
 
-The Supabase URL and publishable key in `lib/supabase.ts` and `app/api/seatlock/route.ts` are public client configuration, not privileged keys. For another Supabase project replace both. Never commit service-role keys, passwords or access tokens.
+## Architecture
 
-## Database
-Apply `supabase/001_seatlock.sql` once to a fresh Supabase database. Direct table access is blocked by RLS and privilege revocation. Authenticated RPC functions derive identity from the verified JWT, enforce organizer ownership, and serialize reservation mutations in transactions. No browser-supplied user ID is trusted. The global transaction lock prioritizes correctness for this small campus application; higher traffic would benefit from narrower locks and separate read/maintenance transactions.
+| Layer | Implementation |
+| --- | --- |
+| Interface | Next.js App Router, React, TypeScript and Tailwind CSS |
+| API | Next.js route handlers forwarding authenticated RPC requests |
+| Identity | Supabase email/password authentication |
+| Reservations | PostgreSQL transaction functions with server-side identity checks |
+| Hosting | Vercel, connected to this repository |
 
-`supabase/test-booking.sql` runs rollback-only checks against a test database. The production migration has already been applied to the configured project. Do not reapply the initial schema there.
+The database derives the caller's identity from the verified JWT. Organizer actions check event ownership. Direct client access to the event and booking tables is revoked; authenticated RPC functions expose the permitted operations.
 
-## Authentication
-Email/password signup is enabled. Email confirmation is disabled for this portfolio demo, so users can create an account and sign in immediately. Email ownership is not verified. This setting was checked against the live Supabase Auth settings on 4 November 2026.
+A global transaction lock serializes booking mutations. The booking clock is refreshed after acquiring that lock, so expiry decisions do not use a timestamp captured before a long wait. This favors correctness for small event workloads; higher traffic would benefit from narrower locking and separate read/maintenance transactions.
 
-For verified email signup, configure custom SMTP, set the Site URL and allowed redirect URL to https://seatlock-roan.vercel.app, then enable email confirmation and test email delivery. Supabase's built-in email service is restricted; delivery to arbitrary public users has not been verified.
+## Local development
 
-Fresh public signup and password login were tested with two disposable accounts. Booking workflows, waitlist promotion, organizer authorization, check-in and cancellation passed live API checks. The 80-request reliability lab accepted exactly 10 requests, rejected 70, and reported zero errors or oversold seats. No payment or paid upgrade is required by the application. Free-tier quotas and inactivity pauses still apply.
+Use Node.js 22 or newer:
+
+```sh
+npm ci
+npm run dev
+```
+
+Open http://localhost:3000. To check a production build:
+
+```sh
+npm run build
+npm run typecheck
+```
+
+The Supabase URL and publishable key in `lib/supabase.ts` and `app/api/seatlock/route.ts` are public client configuration. To use a separate database, replace both configurations. Never commit service-role keys, passwords or access tokens.
+
+## Database setup
+
+Apply `supabase/001_seatlock.sql` once to a fresh Supabase project. The configured live database is already initialized; do not reapply the baseline there. Incremental upgrades are stored in `supabase/migrations/`.
+
+`supabase/test-booking.sql` checks duplicate prevention, capacity, waitlists, promotion, expiry, ownership, closure and deleted-account rejection inside a transaction that is rolled back. Run it against a test database with the baseline schema installed.
+
+## Validation
+
+GitHub Actions runs the production build and TypeScript checks on pushes and pull requests. The verification record also covers API booking workflows and the isolated reliability lab: 80 requests, 10 accepted, 70 capacity rejections, zero errors and no oversold seats. That result demonstrates the bounded scenario; it is not a general throughput benchmark.
+
+See [VERIFICATION.md](VERIFICATION.md) for test scope and limitations.
 
 ## Deployment
-Import this repository into Vercel using the Next.js preset. Install: `npm ci`. Build: `npm run build`. The project does not require private environment variables. The existing Vercel project is connected to CodeWith-Pranav/SeatLock. Pushes to main trigger production deployments; pull requests receive preview deployments. GitHub Actions runs the production build and TypeScript checks.
 
-## Migration notes
-This version replaces Cloudflare D1 and platform sign-in with PostgreSQL and Supabase email/password sign-in while retaining the original UI and booking features. The old database contained four sample events and one confirmed reservation. The reservation was migrated to the matching existing Supabase account; existing destination sample events were preserved. A private JSON backup of the original rows was saved separately, outside this public repository.
+The Vercel project is connected to `CodeWith-Pranav/SeatLock`. Pushes to `main` trigger production deployments and pull requests receive preview deployments. A new deployment uses the Next.js preset, `npm ci` for installation and `npm run build` for the build.
 
-## Review fixes
-The booking clock is refreshed after obtaining the mutation lock, avoiding stale expiry decisions under contention. Both RPC endpoints reject deleted accounts. Reliability tests serialize starts per user, and reject missing attempt indexes. The baseline schema includes these fixes; the applied upgrade is also recorded in `supabase/migrations/20261104132254_booking_safety.sql`.
+## Scope and tradeoffs
+
+Email confirmation is disabled for the public demo, so signup does not verify email ownership. Verified-email signup requires SMTP configuration, allowed redirect URLs and a tested confirmation flow. Waitlist offers appear in the application; no email alerts or payment processing are implemented.
+
+Expired holds are processed when application requests run database upkeep. The client refreshes while open; expiry processing does not require a continuously running background worker. Free-tier hosting limits and inactivity pauses may affect availability.
