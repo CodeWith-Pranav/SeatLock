@@ -17,8 +17,11 @@ create function public.seatlock(p jsonb default '{}') returns jsonb language plp
 declare u uuid:=auth.uid();a text:=coalesce(p->>'action','data');t bigint:=floor(extract(epoch from clock_timestamp())*1000);eid text:=p->>'id';e events%rowtype;b bookings%rowtype;x jsonb:=p->'event';nm text;em text;cap integer;st bigint;eid2 text;outdata jsonb;
 begin
  perform pg_advisory_xact_lock(812733001);
+ -- Measure expiry after waiting for the mutation lock.
+ t:=floor(extract(epoch from clock_timestamp())*1000);
  if u is null then raise exception 'Sign in to continue.' using errcode='28000';end if;
  select coalesce(nullif(raw_user_meta_data->>'display_name',''),split_part(email,'@',1),'Member'),coalesce(email,'') into nm,em from auth.users where id=u;
+ if not found then raise exception 'Account no longer exists.' using errcode='28000';end if;
  if a='seed' or (a='data' and not exists(select 1 from events where kind='event')) then
   insert into events(id,owner,title,description,category,location,starts,capacity,theme,created) values
   ('demo-build',u,'Build something that matters.','A hands-on product engineering workshop. Take an idea from a blank page to a working prototype. Bring your laptop and your curiosity.','Workshop','DTU · Innovation Lab',t+604800000,48,0,t),
@@ -75,7 +78,9 @@ grant execute on function public.seatlock(jsonb) to authenticated;
 create function public.seatlock_lab(p jsonb) returns jsonb language plpgsql security definer set search_path=public,pg_temp as $$
 declare u uuid:=auth.uid();eid text:=p->>'id';e events%rowtype;n integer;i integer;t bigint:=floor(extract(epoch from clock_timestamp())*1000);
 begin
- if u is null then raise exception 'Sign in to continue.';end if;
+ if u is null or not exists(select 1 from auth.users where id=u) then raise exception 'Sign in to continue.' using errcode='28000';end if;
+ perform pg_advisory_xact_lock(hashtextextended(u::text,812733002));
+ t:=floor(extract(epoch from clock_timestamp())*1000);
  if p->>'action'='start' then
   delete from events where owner=u and kind='lab' and created<t-600000;
   if exists(select 1 from events where owner=u and kind='lab') then raise exception 'A reliability test is already running. Retry after it finishes.';end if;
@@ -84,7 +89,7 @@ begin
  select * into e from events where id=eid and kind='lab' and owner=u for update;
  if not found then raise exception 'Test not found.';end if;
  if p->>'action'='attempt' then
-  i:=(p->>'index')::int;if i not between 0 and 79 then raise exception 'Invalid attempt';end if;
+  i:=(p->>'index')::int;if i is null or i not between 0 and 79 then raise exception 'Invalid attempt';end if;
   select count(*) into n from bookings where event=eid;
   if n<10 then insert into bookings values(gen_random_uuid()::text,eid,md5(eid||':'||i)::uuid,'Synthetic '||i,'','held',t+300000,t,0) on conflict(event,"user") do nothing;return '{"accepted":true}';end if;
   return '{"accepted":false}';
